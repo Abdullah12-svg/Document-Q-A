@@ -378,8 +378,3 @@ This project demonstrates practical, end-to-end AI engineering skills: designing
 **Abdullah**
 GitHub: [Abdullah12-svg](https://github.com/Abdullah12-svg)
 
----
-
-## License
-
-No license file is currently included in this repository. Add a license (for example, MIT) if you intend to share or open-source this project.
