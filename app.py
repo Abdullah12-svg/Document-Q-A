@@ -11,12 +11,16 @@ from vectorstore import create_vectorstore
 from qa import create_qa_chain
 
 
+# ==================================================
+# LOAD ENVIRONMENT VARIABLES
+# ==================================================
+
 load_dotenv()
 
 
-# --------------------------------------------------
+# ==================================================
 # PAGE CONFIG
-# --------------------------------------------------
+# ==================================================
 
 st.set_page_config(
     page_title="Document Q&A",
@@ -25,9 +29,9 @@ st.set_page_config(
 )
 
 
-# --------------------------------------------------
+# ==================================================
 # SESSION STATE
-# --------------------------------------------------
+# ==================================================
 
 if "ask_question" not in st.session_state:
     st.session_state.ask_question = None
@@ -42,9 +46,9 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 
-# --------------------------------------------------
+# ==================================================
 # CUSTOM CSS
-# --------------------------------------------------
+# ==================================================
 
 st.markdown(
     """
@@ -74,9 +78,9 @@ st.markdown(
 )
 
 
-# --------------------------------------------------
+# ==================================================
 # HEADER
-# --------------------------------------------------
+# ==================================================
 
 st.markdown(
     '<div class="main-title">📚 Document Q&A</div>',
@@ -92,9 +96,9 @@ st.markdown(
 )
 
 
-# --------------------------------------------------
+# ==================================================
 # SIDEBAR
-# --------------------------------------------------
+# ==================================================
 
 with st.sidebar:
 
@@ -113,13 +117,31 @@ with st.sidebar:
     st.write("📊 CSV")
     st.write("📝 TXT")
 
+    st.divider()
 
-# --------------------------------------------------
+    # --------------------------------------------------
+    # CLEAR CHAT
+    # --------------------------------------------------
+
+    st.header("💬 Conversation")
+
+    if st.button(
+        "🗑️ Clear Chat",
+        use_container_width=True
+    ):
+
+        st.session_state.messages = []
+
+        st.rerun()
+
+
+# ==================================================
 # DOCUMENT PROCESSING
-# --------------------------------------------------
+# ==================================================
 
 if uploaded_file:
 
+    # Process only when a new document is uploaded
     if st.session_state.file_name != uploaded_file.name:
 
         try:
@@ -128,17 +150,28 @@ if uploaded_file:
                 "🔄 Processing document..."
             ):
 
+                # --------------------------------------------------
+                # FILE EXTENSION
+                # --------------------------------------------------
+
                 file_extension = os.path.splitext(
                     uploaded_file.name
                 )[1]
 
-                # Check for empty file
+                # --------------------------------------------------
+                # EMPTY FILE CHECK
+                # --------------------------------------------------
+
                 if uploaded_file.size == 0:
+
                     raise ValueError(
                         "The uploaded file is empty."
                     )
 
-                # Save uploaded file temporarily
+                # --------------------------------------------------
+                # SAVE TEMPORARY FILE
+                # --------------------------------------------------
+
                 with tempfile.NamedTemporaryFile(
                     delete=False,
                     suffix=file_extension
@@ -150,7 +183,10 @@ if uploaded_file:
 
                     temp_file_path = temp_file.name
 
-                # Load document
+                # --------------------------------------------------
+                # LOAD DOCUMENT
+                # --------------------------------------------------
+
                 try:
 
                     documents = load_document(
@@ -159,13 +195,18 @@ if uploaded_file:
 
                 finally:
 
-                    if os.path.exists(temp_file_path):
+                    if os.path.exists(
+                        temp_file_path
+                    ):
 
                         os.unlink(
                             temp_file_path
                         )
 
-                # Check loaded documents
+                # --------------------------------------------------
+                # CHECK DOCUMENT
+                # --------------------------------------------------
+
                 if not documents:
 
                     raise ValueError(
@@ -173,19 +214,24 @@ if uploaded_file:
                         "in this document."
                     )
 
-                # Preserve original filename
+                # --------------------------------------------------
+                # PRESERVE ORIGINAL FILE NAME
+                # --------------------------------------------------
+
                 for document in documents:
 
                     document.metadata["source"] = (
                         uploaded_file.name
                     )
 
-                # Split document
+                # --------------------------------------------------
+                # SPLIT DOCUMENT
+                # --------------------------------------------------
+
                 chunks = split_documents(
                     documents
                 )
 
-                # Check chunks
                 if not chunks:
 
                     raise ValueError(
@@ -193,7 +239,10 @@ if uploaded_file:
                         "split into readable chunks."
                     )
 
-                # Create unique Chroma collection
+                # --------------------------------------------------
+                # CREATE COLLECTION NAME
+                # --------------------------------------------------
+
                 collection_name = (
                     "document_"
                     + uploaded_file.name
@@ -201,20 +250,29 @@ if uploaded_file:
                     .replace(" ", "_")
                 )
 
-                # Create vector store
+                # --------------------------------------------------
+                # CREATE VECTOR STORE
+                # --------------------------------------------------
+
                 vectorstore = create_vectorstore(
                     chunks,
                     collection_name
                 )
 
-                # Create QA chain
+                # --------------------------------------------------
+                # CREATE QA CHAIN
+                # --------------------------------------------------
+
                 st.session_state.ask_question = (
                     create_qa_chain(
                         vectorstore
                     )
                 )
 
-                # Save state
+                # --------------------------------------------------
+                # SAVE DOCUMENT STATE
+                # --------------------------------------------------
+
                 st.session_state.file_name = (
                     uploaded_file.name
                 )
@@ -223,7 +281,7 @@ if uploaded_file:
                     len(chunks)
                 )
 
-                # Clear previous conversation
+                # New document = new conversation
                 st.session_state.messages = []
 
             st.success(
@@ -241,7 +299,10 @@ if uploaded_file:
                 f"Details: {str(e)}"
             )
 
-            # Reset state after error
+            # --------------------------------------------------
+            # RESET STATE
+            # --------------------------------------------------
+
             st.session_state.ask_question = None
 
             st.session_state.file_name = None
@@ -251,11 +312,15 @@ if uploaded_file:
             st.session_state.messages = []
 
 
-# --------------------------------------------------
-# DOCUMENT STATUS
-# --------------------------------------------------
+# ==================================================
+# DOCUMENT READY
+# ==================================================
 
 if st.session_state.ask_question:
+
+    # ==================================================
+    # DOCUMENT STATUS
+    # ==================================================
 
     st.markdown(
         '<div class="status-box">',
@@ -286,99 +351,40 @@ if st.session_state.ask_question:
     )
 
 
-    # --------------------------------------------------
-    # QUESTION AREA
-    # --------------------------------------------------
+    # ==================================================
+    # CHAT HISTORY
+    # ==================================================
 
-    st.subheader("💬 Ask a Question")
+    for message in st.session_state.messages:
 
-    question = st.text_input(
-        "Your question",
-        placeholder="What is this document about?",
-        label_visibility="collapsed"
-    )
+        # --------------------------------------------------
+        # USER MESSAGE
+        # --------------------------------------------------
 
-    ask_button = st.button(
-        "🔍 Ask Question",
-        use_container_width=True
-    )
+        with st.chat_message("user"):
 
-
-    # --------------------------------------------------
-    # ASK QUESTION
-    # --------------------------------------------------
-
-    if ask_button:
-
-        if not question.strip():
-
-            st.warning(
-                "Please enter a question."
+            st.write(
+                message["question"]
             )
 
-        else:
 
-            try:
+        # --------------------------------------------------
+        # ASSISTANT MESSAGE
+        # --------------------------------------------------
 
-                with st.spinner(
-                    "🤔 Searching the document..."
-                ):
-
-                    result = (
-                        st.session_state.ask_question(
-                            question
-                        )
-                    )
-
-                # Store conversation
-                st.session_state.messages.append(
-                    {
-                        "question": question,
-                        "answer": result["answer"],
-                        "sources": result["sources"]
-                    }
-                )
-
-            except Exception as e:
-
-                st.error(
-                    "❌ Something went wrong "
-                    "while generating the answer."
-                )
-
-                st.info(
-                    f"Details: {str(e)}"
-                )
-
-
-    # --------------------------------------------------
-    # CHAT HISTORY
-    # --------------------------------------------------
-
-    if st.session_state.messages:
-
-        st.subheader("💡 Answers")
-
-        for message in reversed(
-            st.session_state.messages
+        with st.chat_message(
+            "assistant"
         ):
 
-            st.markdown(
-                f"**🙋 You:** "
-                f"{message['question']}"
+            st.write(
+                message["answer"]
             )
-
-            st.markdown(
-                f"**🤖 Nova:** "
-                f"{message['answer']}"
-            )
-
 
             # --------------------------------------------------
             # SOURCES
             # --------------------------------------------------
 
-            if message["sources"]:
+            if message.get("sources"):
 
                 with st.expander(
                     "📚 View Sources"
@@ -405,19 +411,19 @@ if st.session_state.ask_question:
                             ""
                         )
 
-
                         st.markdown(
                             f"### Source {index}"
                         )
-
 
                         st.write(
                             f"📄 **File:** "
                             f"{source_name}"
                         )
 
+                        # --------------------------------------------------
+                        # PDF PAGE
+                        # --------------------------------------------------
 
-                        # PDF page number
                         if page is not None:
 
                             st.write(
@@ -425,8 +431,10 @@ if st.session_state.ask_question:
                                 f"{page + 1}"
                             )
 
+                        # --------------------------------------------------
+                        # RETRIEVED CONTENT
+                        # --------------------------------------------------
 
-                        # Retrieved chunk
                         st.text_area(
                             "Retrieved content",
                             content,
@@ -439,12 +447,149 @@ if st.session_state.ask_question:
                         )
 
 
-            st.divider()
+    # ==================================================
+    # CHAT INPUT
+    # ==================================================
+
+    question = st.chat_input(
+        "Ask something about your document..."
+    )
 
 
-# --------------------------------------------------
+    # ==================================================
+    # PROCESS QUESTION
+    # ==================================================
+
+    if question:
+
+        # --------------------------------------------------
+        # DISPLAY USER MESSAGE IMMEDIATELY
+        # --------------------------------------------------
+
+        with st.chat_message("user"):
+
+            st.write(
+                question
+            )
+
+        try:
+
+            # --------------------------------------------------
+            # GENERATE ANSWER
+            # --------------------------------------------------
+
+            with st.chat_message(
+                "assistant"
+            ):
+
+                with st.spinner(
+                    "🤔 Searching the document..."
+                ):
+
+                    result = (
+                        st.session_state.ask_question(
+                            question,
+                            st.session_state.messages
+                        )
+                    )
+
+                answer = result["answer"]
+
+                sources = result["sources"]
+
+                # --------------------------------------------------
+                # DISPLAY ANSWER
+                # --------------------------------------------------
+
+                st.write(
+                    answer
+                )
+
+                # --------------------------------------------------
+                # DISPLAY SOURCES
+                # --------------------------------------------------
+
+                if sources:
+
+                    with st.expander(
+                        "📚 View Sources"
+                    ):
+
+                        for index, source in enumerate(
+                            sources,
+                            start=1
+                        ):
+
+                            source_name = os.path.basename(
+                                source.get(
+                                    "source",
+                                    "Unknown"
+                                )
+                            )
+
+                            page = source.get(
+                                "page"
+                            )
+
+                            content = source.get(
+                                "content",
+                                ""
+                            )
+
+                            st.markdown(
+                                f"### Source {index}"
+                            )
+
+                            st.write(
+                                f"📄 **File:** "
+                                f"{source_name}"
+                            )
+
+                            if page is not None:
+
+                                st.write(
+                                    f"📑 **Page:** "
+                                    f"{page + 1}"
+                                )
+
+                            st.text_area(
+                                "Retrieved content",
+                                content,
+                                height=150,
+                                key=(
+                                    f"new_source_"
+                                    f"{index}_"
+                                    f"{len(st.session_state.messages)}"
+                                )
+                            )
+
+                # --------------------------------------------------
+                # SAVE MESSAGE
+                # --------------------------------------------------
+
+                st.session_state.messages.append(
+                    {
+                        "question": question,
+                        "answer": answer,
+                        "sources": sources
+                    }
+                )
+
+        except Exception as e:
+
+            st.error(
+                "❌ Something went wrong "
+                "while generating the answer."
+            )
+
+            st.info(
+                f"Details: {str(e)}"
+            )
+
+
+# ==================================================
 # EMPTY STATE
-# --------------------------------------------------
+# ==================================================
 
 else:
 
@@ -455,7 +600,6 @@ else:
 
     col1, col2, col3 = st.columns(3)
 
-
     with col1:
 
         st.markdown("### 📕 PDF")
@@ -464,7 +608,6 @@ else:
             "Ask questions about reports, "
             "notes, books and documents."
         )
-
 
     with col2:
 
@@ -475,7 +618,6 @@ else:
             "in tabular data."
         )
 
-
     with col3:
 
         st.markdown("### 📝 TXT")
@@ -484,4 +626,3 @@ else:
             "Ask questions about plain "
             "text files."
         )
-

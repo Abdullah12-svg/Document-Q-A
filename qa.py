@@ -16,43 +16,29 @@ def extract_text(response):
 
     content = response.content
 
-    # Gemini returns normal string
     if isinstance(content, str):
-
         return content.strip()
 
-    # Gemini returns a list of content blocks
     if isinstance(content, list):
 
         text_parts = []
 
         for item in content:
 
-            # Dictionary content block
             if isinstance(item, dict):
 
                 text = item.get("text")
 
                 if text:
+                    text_parts.append(text)
 
-                    text_parts.append(
-                        text
-                    )
-
-            # Plain string
             elif isinstance(item, str):
 
-                text_parts.append(
-                    item
-                )
+                text_parts.append(item)
 
         if text_parts:
+            return "\n".join(text_parts).strip()
 
-            return "\n".join(
-                text_parts
-            ).strip()
-
-    # Fallback
     return str(content).strip()
 
 
@@ -71,18 +57,16 @@ def create_qa_chain(vectorstore):
         temperature=0
     )
 
-
     # --------------------------------------------------
-    # NORMAL RAG RETRIEVER
+    # RETRIEVER
     # --------------------------------------------------
 
     retriever = create_retriever(
         vectorstore
     )
 
-
     # --------------------------------------------------
-    # NORMAL QUESTION PROMPT
+    # NORMAL QA PROMPT
     # --------------------------------------------------
 
     qa_prompt = ChatPromptTemplate.from_template(
@@ -94,21 +78,29 @@ document context.
 
 IMPORTANT RULES:
 
-1. Use ONLY the provided context.
+1. Use ONLY the provided document context.
 2. Do NOT use outside knowledge.
 3. Do NOT invent information.
-4. If the answer cannot be found in the context,
+4. Use the conversation history only to understand
+   references such as "he", "she", "it", "that person",
+   "the previous one", etc.
+5. The actual answer MUST come from the document context.
+6. If the answer cannot be found in the document context,
    say exactly:
 
 "I don't know based on the provided document."
 
-5. Give a clear and concise answer.
+7. Give a clear and concise answer.
+
+CONVERSATION HISTORY:
+
+{history}
 
 DOCUMENT CONTEXT:
 
 {context}
 
-USER QUESTION:
+CURRENT USER QUESTION:
 
 {question}
 
@@ -116,9 +108,8 @@ ANSWER:
 """
     )
 
-
     # --------------------------------------------------
-    # DOCUMENT OVERVIEW PROMPT
+    # OVERVIEW PROMPT
     # --------------------------------------------------
 
     overview_prompt = ChatPromptTemplate.from_template(
@@ -154,6 +145,54 @@ ANSWER:
 """
     )
 
+    # --------------------------------------------------
+    # CONVERSATION-AWARE QUESTION REWRITE PROMPT
+    # --------------------------------------------------
+
+    rewrite_prompt = ChatPromptTemplate.from_template(
+        """
+You are a question rewriting assistant for a
+document question-answering system.
+
+Your job is to rewrite the user's current question
+into a complete standalone question.
+
+Use the conversation history to resolve references
+such as:
+
+- he
+- she
+- they
+- it
+- this person
+- that person
+- his
+- her
+- their
+- the previous person
+- the previous record
+
+IMPORTANT RULES:
+
+1. Do NOT answer the question.
+2. ONLY rewrite the question.
+3. Preserve the user's original meaning.
+4. If the question is already standalone, return it
+   unchanged.
+5. Do not add information that is not present in the
+   conversation.
+
+CONVERSATION HISTORY:
+
+{history}
+
+CURRENT QUESTION:
+
+{question}
+
+STANDALONE QUESTION:
+"""
+    )
 
     # --------------------------------------------------
     # OVERVIEW QUESTION DETECTION
@@ -189,30 +228,57 @@ ANSWER:
 
     ]
 
+    # --------------------------------------------------
+    # FORMAT CHAT HISTORY
+    # --------------------------------------------------
+
+    def format_history(messages):
+
+        if not messages:
+            return "No previous conversation."
+
+        history_parts = []
+
+        for message in messages:
+
+            history_parts.append(
+                f"User: {message['question']}"
+            )
+
+            history_parts.append(
+                f"Assistant: {message['answer']}"
+            )
+
+        return "\n".join(history_parts)
 
     # --------------------------------------------------
     # ASK QUESTION
     # --------------------------------------------------
 
-    def ask_question(question):
+    def ask_question(
+        question,
+        conversation_history=None
+    ):
 
         question_clean = question.strip()
 
+        if conversation_history is None:
+            conversation_history = []
+
+        history = format_history(
+            conversation_history
+        )
+
         question_lower = question_clean.lower()
 
-
         # ---------------------------------------------
-        # CHECK QUESTION TYPE
+        # CHECK OVERVIEW QUESTION
         # ---------------------------------------------
 
         is_overview_question = any(
-
             phrase in question_lower
-
             for phrase in overview_questions
-
         )
-
 
         # ---------------------------------------------
         # OVERVIEW QUESTION
@@ -234,21 +300,11 @@ ANSWER:
                     "sources": []
                 }
 
-
-            # Create context from ALL chunks
-
             context = "\n\n".join(
-
                 item["content"]
-
                 for item in all_documents
-
                 if item.get("content")
-
             )
-
-
-            # Create overview prompt
 
             messages = overview_prompt.invoke(
                 {
@@ -257,8 +313,8 @@ ANSWER:
                 }
             )
 
-
-            # Sources
+            # Only display a reasonable number
+            # of source chunks.
 
             sources = [
 
@@ -285,9 +341,7 @@ ANSWER:
                 for item in all_documents[:5]
 
                 if item.get("content")
-
             ]
-
 
         # ---------------------------------------------
         # NORMAL QUESTION
@@ -295,10 +349,36 @@ ANSWER:
 
         else:
 
-            documents = retriever.invoke(
-                question_clean
-            )
+            # -----------------------------------------
+            # REWRITE QUESTION IF HISTORY EXISTS
+            # -----------------------------------------
 
+            search_question = question_clean
+
+            if conversation_history:
+
+                rewrite_messages = rewrite_prompt.invoke(
+                    {
+                        "history": history,
+                        "question": question_clean
+                    }
+                )
+
+                rewritten_response = llm.invoke(
+                    rewrite_messages
+                )
+
+                search_question = extract_text(
+                    rewritten_response
+                )
+
+            # -----------------------------------------
+            # RETRIEVE DOCUMENTS
+            # -----------------------------------------
+
+            documents = retriever.invoke(
+                search_question
+            )
 
             if not documents:
 
@@ -310,29 +390,30 @@ ANSWER:
                     "sources": []
                 }
 
-
-            # Create context
+            # -----------------------------------------
+            # CREATE CONTEXT
+            # -----------------------------------------
 
             context = "\n\n".join(
-
                 document.page_content
-
                 for document in documents
-
             )
 
-
-            # Create normal QA prompt
+            # -----------------------------------------
+            # QA PROMPT
+            # -----------------------------------------
 
             messages = qa_prompt.invoke(
                 {
+                    "history": history,
                     "context": context,
                     "question": question_clean
                 }
             )
 
-
-            # Sources
+            # -----------------------------------------
+            # SOURCES
+            # -----------------------------------------
 
             sources = [
 
@@ -351,9 +432,7 @@ ANSWER:
                 }
 
                 for document in documents
-
             ]
-
 
         # ---------------------------------------------
         # CALL GEMINI
@@ -363,15 +442,13 @@ ANSWER:
             messages
         )
 
-
         # ---------------------------------------------
-        # EXTRACT CLEAN ANSWER
+        # EXTRACT ANSWER
         # ---------------------------------------------
 
         answer = extract_text(
             response
         )
-
 
         # ---------------------------------------------
         # RETURN RESULT
@@ -385,9 +462,8 @@ ANSWER:
 
         }
 
-
     # --------------------------------------------------
-    # RETURN QA FUNCTION
+    # RETURN FUNCTION
     # --------------------------------------------------
 
     return ask_question
