@@ -1,6 +1,7 @@
 
 import os
 import tempfile
+import hashlib
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -12,7 +13,7 @@ from qa import create_qa_chain
 
 
 # ==================================================
-# LOAD ENVIRONMENT VARIABLES
+# LOAD ENVIRONMENT
 # ==================================================
 
 load_dotenv()
@@ -36,8 +37,8 @@ st.set_page_config(
 if "ask_question" not in st.session_state:
     st.session_state.ask_question = None
 
-if "file_name" not in st.session_state:
-    st.session_state.file_name = None
+if "file_names" not in st.session_state:
+    st.session_state.file_names = []
 
 if "chunks_count" not in st.session_state:
     st.session_state.chunks_count = 0
@@ -89,8 +90,8 @@ st.markdown(
 
 st.markdown(
     '<div class="subtitle">'
-    'Ask questions about your PDF, CSV, or TXT documents '
-    'using Retrieval-Augmented Generation (RAG).'
+    'Ask questions across multiple PDF, CSV, and TXT '
+    'documents using Retrieval-Augmented Generation (RAG).'
     '</div>',
     unsafe_allow_html=True
 )
@@ -102,11 +103,12 @@ st.markdown(
 
 with st.sidebar:
 
-    st.header("📄 Document")
+    st.header("📄 Documents")
 
-    uploaded_file = st.file_uploader(
-        "Upload a file",
-        type=["pdf", "csv", "txt"]
+    uploaded_files = st.file_uploader(
+        "Upload files",
+        type=["pdf", "csv", "txt"],
+        accept_multiple_files=True
     )
 
     st.divider()
@@ -118,10 +120,6 @@ with st.sidebar:
     st.write("📝 TXT")
 
     st.divider()
-
-    # --------------------------------------------------
-    # CLEAR CHAT
-    # --------------------------------------------------
 
     st.header("💬 Conversation")
 
@@ -139,129 +137,194 @@ with st.sidebar:
 # DOCUMENT PROCESSING
 # ==================================================
 
-if uploaded_file:
+if uploaded_files:
 
-    # Process only when a new document is uploaded
-    if st.session_state.file_name != uploaded_file.name:
+    # --------------------------------------------------
+    # CURRENT FILE SET
+    # --------------------------------------------------
+
+    current_file_names = sorted(
+        file.name
+        for file in uploaded_files
+    )
+
+    previous_file_names = sorted(
+        st.session_state.file_names
+    )
+
+
+    # --------------------------------------------------
+    # PROCESS ONLY WHEN FILE SET CHANGES
+    # --------------------------------------------------
+
+    if current_file_names != previous_file_names:
 
         try:
 
             with st.spinner(
-                "🔄 Processing document..."
+                "🔄 Processing documents..."
             ):
 
-                # --------------------------------------------------
-                # FILE EXTENSION
-                # --------------------------------------------------
+                all_chunks = []
 
-                file_extension = os.path.splitext(
-                    uploaded_file.name
-                )[1]
 
-                # --------------------------------------------------
-                # EMPTY FILE CHECK
-                # --------------------------------------------------
+                # ==================================================
+                # PROCESS EVERY UPLOADED FILE
+                # ==================================================
 
-                if uploaded_file.size == 0:
+                for uploaded_file in uploaded_files:
 
-                    raise ValueError(
-                        "The uploaded file is empty."
-                    )
+                    file_extension = os.path.splitext(
+                        uploaded_file.name
+                    )[1]
 
-                # --------------------------------------------------
-                # SAVE TEMPORARY FILE
-                # --------------------------------------------------
 
-                with tempfile.NamedTemporaryFile(
-                    delete=False,
-                    suffix=file_extension
-                ) as temp_file:
+                    # --------------------------------------------------
+                    # EMPTY FILE CHECK
+                    # --------------------------------------------------
 
-                    temp_file.write(
-                        uploaded_file.getvalue()
-                    )
+                    if uploaded_file.size == 0:
 
-                    temp_file_path = temp_file.name
+                        raise ValueError(
+                            f"{uploaded_file.name} is empty."
+                        )
 
-                # --------------------------------------------------
-                # LOAD DOCUMENT
-                # --------------------------------------------------
 
-                try:
+                    # --------------------------------------------------
+                    # CREATE TEMPORARY FILE
+                    # --------------------------------------------------
 
-                    documents = load_document(
-                        temp_file_path
-                    )
+                    with tempfile.NamedTemporaryFile(
+                        delete=False,
+                        suffix=file_extension
+                    ) as temp_file:
 
-                finally:
+                        temp_file.write(
+                            uploaded_file.getvalue()
+                        )
 
-                    if os.path.exists(
-                        temp_file_path
-                    ):
+                        temp_file_path = (
+                            temp_file.name
+                        )
 
-                        os.unlink(
+
+                    # --------------------------------------------------
+                    # LOAD DOCUMENT
+                    # --------------------------------------------------
+
+                    try:
+
+                        documents = load_document(
                             temp_file_path
                         )
 
-                # --------------------------------------------------
-                # CHECK DOCUMENT
-                # --------------------------------------------------
+                    finally:
 
-                if not documents:
+                        if os.path.exists(
+                            temp_file_path
+                        ):
+
+                            os.unlink(
+                                temp_file_path
+                            )
+
+
+                    # --------------------------------------------------
+                    # CHECK DOCUMENT
+                    # --------------------------------------------------
+
+                    if not documents:
+
+                        raise ValueError(
+                            f"No readable content found "
+                            f"in {uploaded_file.name}."
+                        )
+
+
+                    # --------------------------------------------------
+                    # PRESERVE ORIGINAL FILE NAME
+                    # --------------------------------------------------
+
+                    for document in documents:
+
+                        document.metadata["source"] = (
+                            uploaded_file.name
+                        )
+
+
+                    # --------------------------------------------------
+                    # SPLIT DOCUMENT
+                    # --------------------------------------------------
+
+                    chunks = split_documents(
+                        documents
+                    )
+
+
+                    # --------------------------------------------------
+                    # CHECK CHUNKS
+                    # --------------------------------------------------
+
+                    if not chunks:
+
+                        raise ValueError(
+                            f"{uploaded_file.name} could "
+                            f"not be split into chunks."
+                        )
+
+
+                    # --------------------------------------------------
+                    # ADD CHUNKS TO GLOBAL LIST
+                    # --------------------------------------------------
+
+                    all_chunks.extend(
+                        chunks
+                    )
+
+
+                # ==================================================
+                # CHECK TOTAL CHUNKS
+                # ==================================================
+
+                if not all_chunks:
 
                     raise ValueError(
-                        "No readable content was found "
-                        "in this document."
+                        "No readable chunks were created "
+                        "from the uploaded files."
                     )
 
-                # --------------------------------------------------
-                # PRESERVE ORIGINAL FILE NAME
-                # --------------------------------------------------
 
-                for document in documents:
+                # ==================================================
+                # CREATE UNIQUE COLLECTION
+                # ==================================================
 
-                    document.metadata["source"] = (
-                        uploaded_file.name
-                    )
-
-                # --------------------------------------------------
-                # SPLIT DOCUMENT
-                # --------------------------------------------------
-
-                chunks = split_documents(
-                    documents
+                files_key = "|".join(
+                    current_file_names
                 )
 
-                if not chunks:
-
-                    raise ValueError(
-                        "The document could not be "
-                        "split into readable chunks."
-                    )
-
-                # --------------------------------------------------
-                # CREATE COLLECTION NAME
-                # --------------------------------------------------
+                collection_hash = hashlib.md5(
+                    files_key.encode()
+                ).hexdigest()[:12]
 
                 collection_name = (
-                    "document_"
-                    + uploaded_file.name
-                    .replace(".", "_")
-                    .replace(" ", "_")
+                    "multi_document_"
+                    + collection_hash
                 )
 
-                # --------------------------------------------------
+
+                # ==================================================
                 # CREATE VECTOR STORE
-                # --------------------------------------------------
+                # ==================================================
 
                 vectorstore = create_vectorstore(
-                    chunks,
+                    all_chunks,
                     collection_name
                 )
 
-                # --------------------------------------------------
+
+                # ==================================================
                 # CREATE QA CHAIN
-                # --------------------------------------------------
+                # ==================================================
 
                 st.session_state.ask_question = (
                     create_qa_chain(
@@ -269,43 +332,55 @@ if uploaded_file:
                     )
                 )
 
-                # --------------------------------------------------
-                # SAVE DOCUMENT STATE
-                # --------------------------------------------------
 
-                st.session_state.file_name = (
-                    uploaded_file.name
+                # ==================================================
+                # SAVE SESSION STATE
+                # ==================================================
+
+                st.session_state.file_names = (
+                    current_file_names
                 )
 
                 st.session_state.chunks_count = (
-                    len(chunks)
+                    len(all_chunks)
                 )
 
-                # New document = new conversation
+
+                # --------------------------------------------------
+                # RESET CONVERSATION FOR NEW FILE SET
+                # --------------------------------------------------
+
                 st.session_state.messages = []
 
+
+            # ==================================================
+            # SUCCESS
+            # ==================================================
+
             st.success(
-                f"✅ {uploaded_file.name} "
+                f"✅ {len(uploaded_files)} document(s) "
                 "processed successfully!"
             )
+
+
+        # ==================================================
+        # ERROR HANDLING
+        # ==================================================
 
         except Exception as e:
 
             st.error(
-                "❌ Could not process this document."
+                "❌ Could not process the documents."
             )
 
             st.info(
                 f"Details: {str(e)}"
             )
 
-            # --------------------------------------------------
-            # RESET STATE
-            # --------------------------------------------------
 
             st.session_state.ask_question = None
 
-            st.session_state.file_name = None
+            st.session_state.file_names = []
 
             st.session_state.chunks_count = 0
 
@@ -318,6 +393,7 @@ if uploaded_file:
 
 if st.session_state.ask_question:
 
+
     # ==================================================
     # DOCUMENT STATUS
     # ==================================================
@@ -327,23 +403,43 @@ if st.session_state.ask_question:
         unsafe_allow_html=True
     )
 
+
     col1, col2 = st.columns(2)
+
+
+    # --------------------------------------------------
+    # DOCUMENT LIST
+    # --------------------------------------------------
 
     with col1:
 
-        st.write("📄 **Document**")
-
         st.write(
-            st.session_state.file_name
+            "📄 **Documents**"
         )
+
+        for file_name in (
+            st.session_state.file_names
+        ):
+
+            st.write(
+                f"• {file_name}"
+            )
+
+
+    # --------------------------------------------------
+    # CHUNK COUNT
+    # --------------------------------------------------
 
     with col2:
 
-        st.write("🧩 **Chunks**")
+        st.write(
+            "🧩 **Total Chunks**"
+        )
 
         st.write(
             st.session_state.chunks_count
         )
+
 
     st.markdown(
         '</div>',
@@ -355,7 +451,10 @@ if st.session_state.ask_question:
     # CHAT HISTORY
     # ==================================================
 
-    for message in st.session_state.messages:
+    for message in (
+        st.session_state.messages
+    ):
+
 
         # --------------------------------------------------
         # USER MESSAGE
@@ -372,17 +471,16 @@ if st.session_state.ask_question:
         # ASSISTANT MESSAGE
         # --------------------------------------------------
 
-        with st.chat_message(
-            "assistant"
-        ):
+        with st.chat_message("assistant"):
 
             st.write(
                 message["answer"]
             )
 
-            # --------------------------------------------------
+
+            # ==================================================
             # SOURCES
-            # --------------------------------------------------
+            # ==================================================
 
             if message.get("sources"):
 
@@ -395,6 +493,7 @@ if st.session_state.ask_question:
                         start=1
                     ):
 
+
                         source_name = os.path.basename(
                             source.get(
                                 "source",
@@ -406,19 +505,26 @@ if st.session_state.ask_question:
                             "page"
                         )
 
+                        row = source.get(
+                            "row"
+                        )
+
                         content = source.get(
                             "content",
                             ""
                         )
 
+
                         st.markdown(
                             f"### Source {index}"
                         )
+
 
                         st.write(
                             f"📄 **File:** "
                             f"{source_name}"
                         )
+
 
                         # --------------------------------------------------
                         # PDF PAGE
@@ -431,6 +537,19 @@ if st.session_state.ask_question:
                                 f"{page + 1}"
                             )
 
+
+                        # --------------------------------------------------
+                        # CSV ROW
+                        # --------------------------------------------------
+
+                        if row is not None:
+
+                            st.write(
+                                f"📊 **Row:** "
+                                f"{row}"
+                            )
+
+
                         # --------------------------------------------------
                         # RETRIEVED CONTENT
                         # --------------------------------------------------
@@ -440,7 +559,7 @@ if st.session_state.ask_question:
                             content,
                             height=150,
                             key=(
-                                f"source_"
+                                f"history_source_"
                                 f"{index}_"
                                 f"{id(message)}"
                             )
@@ -452,7 +571,7 @@ if st.session_state.ask_question:
     # ==================================================
 
     question = st.chat_input(
-        "Ask something about your document..."
+        "Ask something about your documents..."
     )
 
 
@@ -463,7 +582,7 @@ if st.session_state.ask_question:
     if question:
 
         # --------------------------------------------------
-        # DISPLAY USER MESSAGE IMMEDIATELY
+        # USER MESSAGE
         # --------------------------------------------------
 
         with st.chat_message("user"):
@@ -472,18 +591,17 @@ if st.session_state.ask_question:
                 question
             )
 
+
         try:
 
             # --------------------------------------------------
-            # GENERATE ANSWER
+            # ASSISTANT RESPONSE
             # --------------------------------------------------
 
-            with st.chat_message(
-                "assistant"
-            ):
+            with st.chat_message("assistant"):
 
                 with st.spinner(
-                    "🤔 Searching the document..."
+                    "🤔 Searching your documents..."
                 ):
 
                     result = (
@@ -493,9 +611,11 @@ if st.session_state.ask_question:
                         )
                     )
 
+
                 answer = result["answer"]
 
                 sources = result["sources"]
+
 
                 # --------------------------------------------------
                 # DISPLAY ANSWER
@@ -505,9 +625,10 @@ if st.session_state.ask_question:
                     answer
                 )
 
-                # --------------------------------------------------
+
+                # ==================================================
                 # DISPLAY SOURCES
-                # --------------------------------------------------
+                # ==================================================
 
                 if sources:
 
@@ -520,6 +641,7 @@ if st.session_state.ask_question:
                             start=1
                         ):
 
+
                             source_name = os.path.basename(
                                 source.get(
                                     "source",
@@ -531,19 +653,30 @@ if st.session_state.ask_question:
                                 "page"
                             )
 
+                            row = source.get(
+                                "row"
+                            )
+
                             content = source.get(
                                 "content",
                                 ""
                             )
 
+
                             st.markdown(
                                 f"### Source {index}"
                             )
+
 
                             st.write(
                                 f"📄 **File:** "
                                 f"{source_name}"
                             )
+
+
+                            # --------------------------------------------------
+                            # PDF PAGE
+                            # --------------------------------------------------
 
                             if page is not None:
 
@@ -551,6 +684,23 @@ if st.session_state.ask_question:
                                     f"📑 **Page:** "
                                     f"{page + 1}"
                                 )
+
+
+                            # --------------------------------------------------
+                            # CSV ROW
+                            # --------------------------------------------------
+
+                            if row is not None:
+
+                                st.write(
+                                    f"📊 **Row:** "
+                                    f"{row}"
+                                )
+
+
+                            # --------------------------------------------------
+                            # CONTENT
+                            # --------------------------------------------------
 
                             st.text_area(
                                 "Retrieved content",
@@ -563,9 +713,10 @@ if st.session_state.ask_question:
                                 )
                             )
 
-                # --------------------------------------------------
+
+                # ==================================================
                 # SAVE MESSAGE
-                # --------------------------------------------------
+                # ==================================================
 
                 st.session_state.messages.append(
                     {
@@ -574,6 +725,11 @@ if st.session_state.ask_question:
                         "sources": sources
                     }
                 )
+
+
+        # ==================================================
+        # QUESTION ERROR
+        # ==================================================
 
         except Exception as e:
 
@@ -594,35 +750,57 @@ if st.session_state.ask_question:
 else:
 
     st.info(
-        "👈 Upload a PDF, CSV, or TXT file "
-        "from the sidebar to get started."
+        "👈 Upload one or more PDF, CSV, or TXT "
+        "files from the sidebar to get started."
     )
+
 
     col1, col2, col3 = st.columns(3)
 
+
+    # ==================================================
+    # PDF
+    # ==================================================
+
     with col1:
 
-        st.markdown("### 📕 PDF")
+        st.markdown(
+            "### 📕 PDF"
+        )
 
         st.write(
-            "Ask questions about reports, "
+            "Ask questions across reports, "
             "notes, books and documents."
         )
 
+
+    # ==================================================
+    # CSV
+    # ==================================================
+
     with col2:
 
-        st.markdown("### 📊 CSV")
+        st.markdown(
+            "### 📊 CSV"
+        )
 
         st.write(
-            "Search information stored "
-            "in tabular data."
+            "Search information across "
+            "multiple datasets."
         )
+
+
+    # ==================================================
+    # TXT
+    # ==================================================
 
     with col3:
 
-        st.markdown("### 📝 TXT")
+        st.markdown(
+            "### 📝 TXT"
+        )
 
         st.write(
-            "Ask questions about plain "
+            "Ask questions across multiple "
             "text files."
         )

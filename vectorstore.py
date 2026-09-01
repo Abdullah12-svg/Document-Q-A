@@ -37,35 +37,6 @@ def create_retriever(vectorstore):
         }
     )
 
-# ==================================================
-# SEARCH WITH RELEVANCE SCORES
-# ==================================================
-
-def search_with_scores(
-    vectorstore,
-    query,
-    k=5,
-    score_threshold=0.7
-):
-
-    results = vectorstore.similarity_search_with_relevance_scores(
-        query,
-        k=k
-    )
-
-    filtered_documents = []
-
-    for document, score in results:
-
-        if score >= score_threshold:
-
-            filtered_documents.append(
-                document
-            )
-
-    return filtered_documents
-
-
 
 # ==================================================
 # GET ALL DOCUMENT CHUNKS

@@ -4,22 +4,24 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from vectorstore import (
     create_retriever,
-    get_all_documents,
-    search_with_scores,
+    get_all_documents
 )
 
 
-# --------------------------------------------------
+# ==================================================
 # EXTRACT CLEAN TEXT FROM GEMINI RESPONSE
-# --------------------------------------------------
+# ==================================================
 
 def extract_text(response):
 
     content = response.content
 
+    # Gemini returns normal string
     if isinstance(content, str):
+
         return content.strip()
 
+    # Gemini returns content blocks
     if isinstance(content, list):
 
         text_parts = []
@@ -31,38 +33,77 @@ def extract_text(response):
                 text = item.get("text")
 
                 if text:
-                    text_parts.append(text)
+
+                    text_parts.append(
+                        text
+                    )
 
             elif isinstance(item, str):
 
-                text_parts.append(item)
+                text_parts.append(
+                    item
+                )
 
         if text_parts:
-            return "\n".join(text_parts).strip()
+
+            return "\n".join(
+                text_parts
+            ).strip()
 
     return str(content).strip()
+
 
 # ==================================================
 # REMOVE DUPLICATE DOCUMENTS
 # ==================================================
 
-def remove_duplicate_documents(documents):
+def remove_duplicate_documents(
+    documents
+):
 
     unique_documents = []
-    seen_content = set()
+
+    seen = set()
 
     for document in documents:
 
-        content = document.page_content.strip()
+        content = (
+            document.page_content
+            .strip()
+        )
 
-        if not content:
+        metadata = (
+            document.metadata
+            or {}
+        )
+
+        source = metadata.get(
+            "source",
+            "Unknown"
+        )
+
+        page = metadata.get(
+            "page"
+        )
+
+        row = metadata.get(
+            "row"
+        )
+
+        document_id = (
+            content,
+            source,
+            page,
+            row
+        )
+
+        if document_id in seen:
+
             continue
 
-        # Exact duplicate protection
-        if content in seen_content:
-            continue
-
-        seen_content.add(content)
+        seen.add(
+            document_id
+        )
 
         unique_documents.append(
             document
@@ -71,31 +112,88 @@ def remove_duplicate_documents(documents):
     return unique_documents
 
 
-# --------------------------------------------------
-# CREATE QA CHAIN
-# --------------------------------------------------
-def create_qa_chain(vectorstore):
+# ==================================================
+# LIMIT CONTEXT SIZE
+# ==================================================
 
-    # --------------------------------------------------
+def build_context(
+    documents,
+    max_characters=12000
+):
+
+    context_parts = []
+
+    total_characters = 0
+
+    for document in documents:
+
+        content = (
+            document.page_content
+            .strip()
+        )
+
+        if not content:
+
+            continue
+
+        remaining = (
+            max_characters
+            - total_characters
+        )
+
+        if remaining <= 0:
+
+            break
+
+        if len(content) > remaining:
+
+            content = content[
+                :remaining
+            ]
+
+        context_parts.append(
+            content
+        )
+
+        total_characters += (
+            len(content)
+        )
+
+    return "\n\n".join(
+        context_parts
+    )
+
+
+# ==================================================
+# CREATE QA CHAIN
+# ==================================================
+
+def create_qa_chain(
+    vectorstore
+):
+
+    # ==================================================
     # LLM
-    # --------------------------------------------------
+    # ==================================================
 
     llm = ChatGoogleGenerativeAI(
         model="gemini-3.5-flash-lite",
         temperature=0
     )
 
-    # --------------------------------------------------
+
+    # ==================================================
     # RETRIEVER
-    # --------------------------------------------------
+    # ==================================================
 
     retriever = create_retriever(
         vectorstore
     )
 
-    # --------------------------------------------------
+
+    # ==================================================
     # NORMAL QA PROMPT
-    # --------------------------------------------------
+    # ==================================================
 
     qa_prompt = ChatPromptTemplate.from_template(
         """
@@ -106,62 +204,21 @@ document context.
 
 IMPORTANT RULES:
 
-1. Use ONLY the provided document context.
+1. Use ONLY the provided context.
 2. Do NOT use outside knowledge.
 3. Do NOT invent information.
-4. Use the conversation history only to understand
-   references such as "he", "she", "it", "that person",
-   "the previous one", etc.
-5. The actual answer MUST come from the document context.
-6. If the answer cannot be found in the document context,
+4. If the answer cannot be found in the context,
    say exactly:
 
 "I don't know based on the provided document."
 
-7. Give a clear and concise answer.
-
-CONVERSATION HISTORY:
-
-{history}
+5. If multiple documents are provided, use information
+   from any relevant document.
+6. Give a clear and concise answer.
+7. When useful, mention the document name containing
+   the answer.
 
 DOCUMENT CONTEXT:
-
-{context}
-
-CURRENT USER QUESTION:
-
-{question}
-
-ANSWER:
-"""
-    )
-
-    # --------------------------------------------------
-    # OVERVIEW PROMPT
-    # --------------------------------------------------
-
-    overview_prompt = ChatPromptTemplate.from_template(
-        """
-You are a document summarization assistant.
-
-The user wants to know what the document is about.
-
-You have been given ALL available document chunks.
-
-IMPORTANT RULES:
-
-1. Read ALL of the provided document information.
-2. Consider every employee, row, record, or section.
-3. Do NOT focus only on the first or most relevant entry.
-4. Identify the overall subject of the document.
-5. Explain what type of information the document contains.
-6. If the document contains multiple records, describe
-   the overall dataset rather than focusing on one record.
-7. Do NOT use outside knowledge.
-8. Do NOT invent information.
-9. Keep the answer concise.
-
-DOCUMENT:
 
 {context}
 
@@ -173,62 +230,57 @@ ANSWER:
 """
     )
 
-    # --------------------------------------------------
-    # CONVERSATION-AWARE QUESTION REWRITE PROMPT
-    # --------------------------------------------------
 
-    rewrite_prompt = ChatPromptTemplate.from_template(
+    # ==================================================
+    # OVERVIEW PROMPT
+    # ==================================================
+
+    overview_prompt = ChatPromptTemplate.from_template(
         """
-You are a question rewriting assistant for a
-document question-answering system.
+You are a document summarization assistant.
 
-Your job is to rewrite the user's current question
-into a complete standalone question.
+The user wants to understand what the uploaded
+documents are about.
 
-Use the conversation history to resolve references
-such as:
-
-- he
-- she
-- they
-- it
-- this person
-- that person
-- his
-- her
-- their
-- the previous person
-- the previous record
+You have been provided with information from the
+uploaded documents.
 
 IMPORTANT RULES:
 
-1. Do NOT answer the question.
-2. ONLY rewrite the question.
-3. Preserve the user's original meaning.
-4. If the question is already standalone, return it
-   unchanged.
-5. Do not add information that is not present in the
-   conversation.
+1. Use ONLY the provided document information.
+2. Do NOT use outside knowledge.
+3. Do NOT invent information.
+4. Consider information from ALL provided documents.
+5. Do NOT focus on only one person, row, or chunk.
+6. Identify the overall subject of the documents.
+7. Explain the main types of information contained
+   in the documents.
+8. If there are multiple documents, mention the
+   different documents and what each contains.
+9. Keep the summary clear and reasonably concise.
 
-CONVERSATION HISTORY:
+DOCUMENT INFORMATION:
 
-{history}
+{context}
 
-CURRENT QUESTION:
+USER QUESTION:
 
 {question}
 
-STANDALONE QUESTION:
+ANSWER:
 """
     )
 
-    # --------------------------------------------------
-    # OVERVIEW QUESTION DETECTION
-    # --------------------------------------------------
+
+    # ==================================================
+    # OVERVIEW QUESTIONS
+    # ==================================================
 
     overview_questions = [
 
         "what is this document about",
+
+        "what is the document about",
 
         "what does this document contain",
 
@@ -254,198 +306,272 @@ STANDALONE QUESTION:
 
         "tell me about this file",
 
+        "what are these documents about",
+
+        "what do these documents contain",
+
+        "summarize these documents",
+
+        "summarise these documents",
+
+        "give me an overview of these documents"
+
     ]
 
-    # --------------------------------------------------
-    # FORMAT CHAT HISTORY
-    # --------------------------------------------------
 
-    def format_history(messages):
-
-        if not messages:
-            return "No previous conversation."
-
-        history_parts = []
-
-        for message in messages:
-
-            history_parts.append(
-                f"User: {message['question']}"
-            )
-
-            history_parts.append(
-                f"Assistant: {message['answer']}"
-            )
-
-        return "\n".join(history_parts)
-
-    # --------------------------------------------------
+    # ==================================================
     # ASK QUESTION
-    # --------------------------------------------------
+    # ==================================================
 
     def ask_question(
         question,
-        conversation_history=None
+        chat_history=None
     ):
 
-        question_clean = question.strip()
-
-        if conversation_history is None:
-            conversation_history = []
-
-        history = format_history(
-            conversation_history
+        question_clean = (
+            question.strip()
         )
 
-        question_lower = question_clean.lower()
+        question_lower = (
+            question_clean.lower()
+        )
 
-        # ---------------------------------------------
-        # CHECK OVERVIEW QUESTION
-        # ---------------------------------------------
+
+        # ==================================================
+        # QUESTION TYPE
+        # ==================================================
 
         is_overview_question = any(
             phrase in question_lower
             for phrase in overview_questions
         )
 
-        # ---------------------------------------------
-        # OVERVIEW QUESTION
-        # ---------------------------------------------
+
+        # ==================================================
+        # OVERVIEW
+        # ==================================================
 
         if is_overview_question:
 
-            all_documents = get_all_documents(
-                vectorstore
+            all_documents = (
+                get_all_documents(
+                    vectorstore
+                )
             )
 
             if not all_documents:
 
                 return {
                     "answer": (
-                        "I don't know based on the "
-                        "provided document."
+                        "I don't know based on "
+                        "the provided document."
                     ),
                     "sources": []
                 }
 
-            context = "\n\n".join(
-                item["content"]
+
+            # ------------------------------------------
+            # Convert all chunks to temporary objects
+            # ------------------------------------------
+
+            class SimpleDocument:
+
+                def __init__(
+                    self,
+                    content,
+                    metadata
+                ):
+
+                    self.page_content = (
+                        content
+                    )
+
+                    self.metadata = (
+                        metadata
+                    )
+
+
+            overview_documents = [
+
+                SimpleDocument(
+                    item["content"],
+                    item["metadata"]
+                )
+
                 for item in all_documents
-                if item.get("content")
-            )
-
-            messages = overview_prompt.invoke(
-                {
-                    "context": context,
-                    "question": question_clean
-                }
-            )
-
-            # Only display a reasonable number
-            # of source chunks.
-
-            sources = [
-
-                {
-                    "source": item[
-                        "metadata"
-                    ].get(
-                        "source",
-                        "Unknown"
-                    ),
-
-                    "page": item[
-                        "metadata"
-                    ].get(
-                        "page"
-                    ),
-
-                    "content": item[
-                        "content"
-                    ]
-
-                }
-
-                for item in all_documents[:5]
 
                 if item.get("content")
             ]
 
-        # ---------------------------------------------
-        # NORMAL QUESTION
-        # ---------------------------------------------
 
-        else:
+            # ------------------------------------------
+            # Build overview context
+            # ------------------------------------------
 
-            # -----------------------------------------
-            # REWRITE QUESTION IF HISTORY EXISTS
-            # -----------------------------------------
+            context_documents = (
+                remove_duplicate_documents(
+                    overview_documents
+                )
+            )
 
-            search_question = question_clean
 
-            if conversation_history:
+            context = build_context(
+                context_documents,
+                max_characters=20000
+            )
 
-                rewrite_messages = rewrite_prompt.invoke(
+
+            if not context:
+
+                return {
+                    "answer": (
+                        "I don't know based on "
+                        "the provided document."
+                    ),
+                    "sources": []
+                }
+
+
+            messages = (
+                overview_prompt.invoke(
                     {
-                        "history": history,
+                        "context": context,
                         "question": question_clean
                     }
                 )
+            )
 
-                rewritten_response = llm.invoke(
-                    rewrite_messages
+
+            # ------------------------------------------
+            # Sources
+            # ------------------------------------------
+
+            sources = []
+
+            seen_sources = set()
+
+            for document in context_documents:
+
+                metadata = (
+                    document.metadata
+                    or {}
                 )
 
-                search_question = extract_text(
-                    rewritten_response
+                source = metadata.get(
+                    "source",
+                    "Unknown"
                 )
 
-            # -----------------------------------------
-            # RETRIEVE DOCUMENTS
-            # -----------------------------------------
+                page = metadata.get(
+                    "page"
+                )
+
+                row = metadata.get(
+                    "row"
+                )
+
+                source_id = (
+                    source,
+                    page,
+                    row
+                )
+
+                if source_id in seen_sources:
+
+                    continue
+
+                seen_sources.add(
+                    source_id
+                )
+
+                sources.append(
+                    {
+                        "source": source,
+                        "page": page,
+                        "row": row,
+                        "content": (
+                            document.page_content
+                        )
+                    }
+                )
+
+                # Keep UI manageable
+                if len(sources) >= 10:
+
+                    break
+
+
+        # ==================================================
+        # NORMAL RAG QUESTION
+        # ==================================================
+
+        else:
+
+            # ------------------------------------------
+            # Retrieve relevant chunks
+            # ------------------------------------------
 
             documents = retriever.invoke(
-                search_question
+                question_clean
             )
-            documents=remove_duplicate_documents(
-                documents
+
+
+            # ------------------------------------------
+            # Remove duplicates
+            # ------------------------------------------
+
+            documents = (
+                remove_duplicate_documents(
+                    documents
+                )
             )
-            documents=documents[:5]
+
+
+            # ------------------------------------------
+            # Maximum 5 retrieved chunks
+            # ------------------------------------------
+
+            documents = documents[:5]
+
 
             if not documents:
 
                 return {
                     "answer": (
-                        "I don't know based on the "
-                        "provided document."
+                        "I don't know based on "
+                        "the provided document."
                     ),
                     "sources": []
                 }
 
-            # -----------------------------------------
-            # CREATE CONTEXT
-            # -----------------------------------------
 
-            context = "\n\n".join(
-                document.page_content
-                for document in documents
+            # ------------------------------------------
+            # Build context
+            # ------------------------------------------
+
+            context = build_context(
+                documents,
+                max_characters=12000
             )
 
-            # -----------------------------------------
-            # QA PROMPT
-            # -----------------------------------------
 
-            messages = qa_prompt.invoke(
-                {
-                    "history": history,
-                    "context": context,
-                    "question": question_clean
-                }
+            # ------------------------------------------
+            # Prompt
+            # ------------------------------------------
+
+            messages = (
+                qa_prompt.invoke(
+                    {
+                        "context": context,
+                        "question": question_clean
+                    }
+                )
             )
 
-            # -----------------------------------------
-            # SOURCES
-            # -----------------------------------------
+
+            # ------------------------------------------
+            # Sources
+            # ------------------------------------------
 
             sources = [
 
@@ -459,32 +585,40 @@ STANDALONE QUESTION:
                         "page"
                     ),
 
+                    "row": document.metadata.get(
+                        "row"
+                    ),
+
                     "content": document.page_content
 
                 }
 
                 for document in documents
+
             ]
 
-        # ---------------------------------------------
+
+        # ==================================================
         # CALL GEMINI
-        # ---------------------------------------------
+        # ==================================================
 
         response = llm.invoke(
             messages
         )
 
-        # ---------------------------------------------
+
+        # ==================================================
         # EXTRACT ANSWER
-        # ---------------------------------------------
+        # ==================================================
 
         answer = extract_text(
             response
         )
 
-        # ---------------------------------------------
-        # RETURN RESULT
-        # ---------------------------------------------
+
+        # ==================================================
+        # RETURN
+        # ==================================================
 
         return {
 
@@ -494,8 +628,10 @@ STANDALONE QUESTION:
 
         }
 
-    # --------------------------------------------------
+
+    # ==================================================
     # RETURN FUNCTION
-    # --------------------------------------------------s
+    # ==================================================
 
     return ask_question
+
