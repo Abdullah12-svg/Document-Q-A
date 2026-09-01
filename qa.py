@@ -4,7 +4,8 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from vectorstore import (
     create_retriever,
-    get_all_documents
+    get_all_documents,
+    search_with_scores,
 )
 
 
@@ -41,11 +42,38 @@ def extract_text(response):
 
     return str(content).strip()
 
+# ==================================================
+# REMOVE DUPLICATE DOCUMENTS
+# ==================================================
+
+def remove_duplicate_documents(documents):
+
+    unique_documents = []
+    seen_content = set()
+
+    for document in documents:
+
+        content = document.page_content.strip()
+
+        if not content:
+            continue
+
+        # Exact duplicate protection
+        if content in seen_content:
+            continue
+
+        seen_content.add(content)
+
+        unique_documents.append(
+            document
+        )
+
+    return unique_documents
+
 
 # --------------------------------------------------
 # CREATE QA CHAIN
 # --------------------------------------------------
-
 def create_qa_chain(vectorstore):
 
     # --------------------------------------------------
@@ -379,6 +407,10 @@ STANDALONE QUESTION:
             documents = retriever.invoke(
                 search_question
             )
+            documents=remove_duplicate_documents(
+                documents
+            )
+            documents=documents[:5]
 
             if not documents:
 
@@ -464,6 +496,6 @@ STANDALONE QUESTION:
 
     # --------------------------------------------------
     # RETURN FUNCTION
-    # --------------------------------------------------
+    # --------------------------------------------------s
 
     return ask_question

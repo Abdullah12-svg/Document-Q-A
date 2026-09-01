@@ -4,9 +4,9 @@ from langchain_chroma import Chroma
 from embeddings import get_embeddings
 
 
-# --------------------------------------------------
+# ==================================================
 # CREATE VECTOR STORE
-# --------------------------------------------------
+# ==================================================
 
 def create_vectorstore(documents, collection_name):
 
@@ -22,23 +22,54 @@ def create_vectorstore(documents, collection_name):
     return vectorstore
 
 
-# --------------------------------------------------
+# ==================================================
 # CREATE RETRIEVER
-# --------------------------------------------------
+# ==================================================
 
 def create_retriever(vectorstore):
 
     return vectorstore.as_retriever(
-        search_type="similarity",
+        search_type="mmr",
         search_kwargs={
-            "k": 5
+            "k": 5,
+            "fetch_k": 15,
+            "lambda_mult": 0.7
         }
     )
 
+# ==================================================
+# SEARCH WITH RELEVANCE SCORES
+# ==================================================
 
-# --------------------------------------------------
+def search_with_scores(
+    vectorstore,
+    query,
+    k=5,
+    score_threshold=0.7
+):
+
+    results = vectorstore.similarity_search_with_relevance_scores(
+        query,
+        k=k
+    )
+
+    filtered_documents = []
+
+    for document, score in results:
+
+        if score >= score_threshold:
+
+            filtered_documents.append(
+                document
+            )
+
+    return filtered_documents
+
+
+
+# ==================================================
 # GET ALL DOCUMENT CHUNKS
-# --------------------------------------------------
+# ==================================================
 
 def get_all_documents(vectorstore):
 
@@ -77,4 +108,3 @@ def get_all_documents(vectorstore):
         )
 
     return documents
-
